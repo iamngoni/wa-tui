@@ -22,7 +22,9 @@ const state = {
   pageSize: 10,
   loading: true,
   error: null,
-  unreadCount: 0
+  unreadCount: 0,
+  /** When opening Settings (F2), where to return: chats | chatDetail */
+  settingsReturnScreen: null
 };
 
 module.exports = state;

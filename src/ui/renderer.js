@@ -5,24 +5,22 @@ const waService = require('../whatsapp/service');
 const { formatTimestamp, truncate, chatIdsMatch } = require('../utils/format');
 const { augmentDisplayPlain } = require('../utils/messageFormat');
 const { paginate } = require('../utils/pager');
+const { loadSettings, saveSettings } = require('../config/userSettings');
+const {
+  PALETTES,
+  PALETTE_ORDER,
+  buildTheme,
+  normalizePaletteId
+} = require('../config/palettes');
 
 /**
- * Palette: Prussian Blue base, Dodger / Pacific / Sky accents, Classic Crimson alerts.
- * (Terminal cannot change font from Node — set it in your terminal emulator preferences.)
+ * Theme colours (mutable). Loaded from ~/.wa-tui/settings.json — change via F2 Settings.
+ * Terminal font is still chosen in the emulator, not here.
  */
-const theme = {
-  bg: '#02182B',
-  fg: '#68C5DB',
-  fgDim: '#448FA3',
-  accent: '#0197F6',
-  selfMsg: '#68C5DB',
-  peerMsg: '#448FA3',
-  error: '#D7263D',
-  unread: '#D7263D',
-  selectedBg: '#0197F6',
-  selectedFg: '#02182B',
-  scrollbar: '#448FA3'
-};
+const theme = Object.assign(
+  {},
+  buildTheme(normalizePaletteId(loadSettings().palette))
+);
 
 const screen = blessed.screen({
   smartCSR: true,
@@ -34,7 +32,6 @@ const screen = blessed.screen({
     color: theme.accent
   },
   style: {
-    bg: theme.bg,
     fg: theme.fg
   }
 });
@@ -46,6 +43,7 @@ const layout = {
   chatList: null,
   chatDetail: null,
   replyBar: null,
+  settingsList: null,
   qrBox: null
 };
 
@@ -186,12 +184,192 @@ function createHeader() {
     tags: true,
     transparent: true,
     style: {
-      fg: theme.accent,
-      bg: theme.bg
+      fg: theme.accent
     },
     padding: { left: 0 }
   });
   screen.append(layout.header);
+}
+
+function syncScreenTheme() {
+  // Screen is a Node, not an Element — neo-blessed may not define `style` until we set it.
+  if (!screen.style) screen.style = {};
+  delete screen.style.bg;
+  screen.style.fg = theme.fg;
+  if (screen.cursor) screen.cursor.color = theme.accent;
+  if (typeof screen.cursorColor === 'function') {
+    try {
+      screen.cursorColor(theme.accent);
+    } catch (_) {}
+  }
+  if (typeof screen.cursorShape === 'function') {
+    try {
+      screen.cursorShape('block', true);
+    } catch (_) {}
+  }
+}
+
+function refreshWidgetStyles() {
+  if (layout.header) {
+    layout.header.style.fg = theme.accent;
+    delete layout.header.style.bg;
+  }
+  if (layout.footer) {
+    layout.footer.style.fg = theme.fgDim;
+    delete layout.footer.style.bg;
+  }
+  if (layout.main) {
+    layout.main.style.fg = theme.fg;
+    delete layout.main.style.bg;
+  }
+  if (layout.chatList) {
+    layout.chatList.style.fg = theme.fg;
+    delete layout.chatList.style.bg;
+    if (layout.chatList.style.selected) {
+      layout.chatList.style.selected.fg = theme.accent;
+      layout.chatList.style.selected.bold = true;
+      layout.chatList.style.selected.underline = true;
+      delete layout.chatList.style.selected.bg;
+    }
+    if (layout.chatList.style.scrollbar) {
+      layout.chatList.style.scrollbar.fg = theme.fgDim;
+      delete layout.chatList.style.scrollbar.bg;
+    }
+    if (layout.chatList.style.track) delete layout.chatList.style.track.bg;
+  }
+  if (layout.chatDetail) {
+    layout.chatDetail.style.fg = theme.fg;
+    delete layout.chatDetail.style.bg;
+  }
+  if (layout.msgList) {
+    layout.msgList.style.fg = theme.fg;
+    delete layout.msgList.style.bg;
+  }
+  if (layout.input) {
+    layout.input.style.fg = theme.fg;
+    delete layout.input.style.bg;
+  }
+  if (layout.replyBar) {
+    layout.replyBar.style.fg = theme.fgDim;
+    delete layout.replyBar.style.bg;
+  }
+  if (layout.settingsList) {
+    layout.settingsList.style.fg = theme.fg;
+    delete layout.settingsList.style.bg;
+    if (layout.settingsList.style.selected) {
+      layout.settingsList.style.selected.fg = theme.accent;
+      layout.settingsList.style.selected.bold = true;
+      layout.settingsList.style.selected.underline = true;
+      delete layout.settingsList.style.selected.bg;
+    }
+    if (layout.settingsList.style.scrollbar) {
+      layout.settingsList.style.scrollbar.fg = theme.fgDim;
+      delete layout.settingsList.style.scrollbar.bg;
+    }
+    if (layout.settingsList.style.track) delete layout.settingsList.style.track.bg;
+  }
+}
+
+function applyPalette(paletteId) {
+  const id = normalizePaletteId(paletteId);
+  Object.assign(theme, buildTheme(id));
+  saveSettings({ palette: id });
+  syncScreenTheme();
+  refreshWidgetStyles();
+}
+
+function syncSettingsListGeometry() {
+  if (!layout.settingsList) return;
+  layout.settingsList.top = 1;
+  layout.settingsList.left = 0;
+  layout.settingsList.width = '100%';
+  layout.settingsList.height = innerRows();
+}
+
+function ensureSettingsList() {
+  if (layout.settingsList) return;
+  layout.settingsList = blessed.list({
+    top: 1,
+    left: 0,
+    width: '100%',
+    height: innerRows(),
+    keys: true,
+    vi: true,
+    mouse: true,
+    tags: true,
+    invertSelected: false,
+    transparent: true,
+    scrollbar: {
+      ch: '│',
+      style: { fg: theme.fgDim }
+    },
+      style: {
+        fg: theme.fg,
+        selected: {
+          fg: theme.accent,
+          bold: true,
+          underline: true
+        }
+      }
+    });
+  layout.settingsList.on('select', (el, index) => {
+    const id = PALETTE_ORDER[index];
+    if (!id) return;
+    applyPalette(id);
+    closeSettings();
+  });
+  screen.append(layout.settingsList);
+}
+
+function openSettings() {
+  if (state.screen !== 'chats' && state.screen !== 'chatDetail') return;
+  state.settingsReturnScreen = state.screen;
+  state.screen = 'settings';
+  if (layout.chatList) layout.chatList.hide();
+  if (layout.chatDetail) layout.chatDetail.hide();
+  ensureSettingsList();
+  syncSettingsListGeometry();
+  const items = PALETTE_ORDER.map((id) => {
+    const p = PALETTES[id];
+    const mark =
+      theme.paletteId === id
+        ? `  {${theme.fgDim}-fg}(current){/${theme.fgDim}-fg}`
+        : '';
+    const label = p.label.replace(/\{/g, '(').replace(/\}/g, ')');
+    return `${label} {${theme.fgDim}-fg}· ${id}{/${theme.fgDim}-fg}${mark}`;
+  });
+  layout.settingsList.setItems(items);
+  refreshWidgetStyles();
+  layout.settingsList.show();
+  layout.settingsList.focus();
+  updateTitle();
+  updateFooter();
+  screen.render();
+}
+
+function closeSettings() {
+  if (state.screen !== 'settings') return;
+  if (layout.settingsList) layout.settingsList.hide();
+  const back = state.settingsReturnScreen || 'chats';
+  state.screen = back;
+  state.settingsReturnScreen = null;
+
+  if (back === 'chatDetail') {
+    layout.chatDetail?.show();
+    refreshWidgetStyles();
+    redrawChatMessages();
+    updateReplyBarContent();
+    layout.input?.focus();
+    updateTitle();
+    updateFooter();
+    screen.render();
+    return;
+  }
+  if (back === 'chats' && state.chats && state.chats.length) {
+    showChats(state.chats);
+    return;
+  }
+  void refreshChats();
 }
 
 function createFooter() {
@@ -201,9 +379,9 @@ function createFooter() {
     width: '100%',
     height: 1,
     content: '',
+    transparent: true,
     style: {
-      fg: theme.fgDim,
-      bg: theme.bg
+      fg: theme.fgDim
     }
   });
   screen.append(layout.footer);
@@ -213,12 +391,15 @@ function createFooter() {
 function updateFooter() {
   if (!layout.footer) return;
   let line;
-  if (state.screen === 'chatDetail') {
+  if (state.screen === 'settings') {
     line =
-      ' [Esc]: clr quote / back · [B]: Back · [Ctrl+↑↓]: Quote msg · [Ctrl+D]: DL media · [Ctrl+L]: Logout · [Q]: Quit';
+      ' [Enter]: apply palette · [Esc]/[F2]: back · Saved: ~/.wa-tui/settings.json · [Q]: Quit';
+  } else if (state.screen === 'chatDetail') {
+    line =
+      ' [Esc]: clr quote / back · [B]: Back · [Ctrl+↑↓]: Quote msg · [Ctrl+D]: DL media · [F2]: Colours · [Ctrl+L]: Logout · [Q]: Quit';
   } else if (state.screen === 'chats') {
     line =
-      ' [Q]: Quit · ctrl+L Logout · [R]efresh · [U]nread · [N]/[P] · [1-3] filter · [O] sort';
+      ' [Q]: Quit · [F2]: Colours · ctrl+L Logout · [R]efresh · [U]nread · [N]/[P] · [1-3] filter · [O] sort';
   } else {
     line = ' [Q]: Quit · [Ctrl+L]: Logout';
   }
@@ -249,6 +430,8 @@ function updateTitle() {
           ? 'A-Z'
           : 'recent';
     modeText = `CHATS (${state.filter}${u} · ${sortLabel}) - P${state.page}`;
+  } else if (state.screen === 'settings') {
+    modeText = 'SETTINGS · Colour palette';
   } else if (state.screen === 'chatDetail') {
     modeText = `CHAT: ${state.currentChatName || 'Unknown'}`;
   }
@@ -457,9 +640,9 @@ function init() {
     scrollable: true,
     alwaysScroll: true,
     tags: true,
+    transparent: true,
     style: {
-      fg: theme.fg,
-      bg: theme.bg
+      fg: theme.fg
     }
   });
   screen.append(layout.main);
@@ -474,9 +657,12 @@ function init() {
     if (state.screen === 'loading') layoutMainPanel('loading');
     else if (state.screen === 'qr') layoutMainPanel('qr');
     syncListAndDetailHeights();
+    syncSettingsListGeometry();
     screen.render();
   });
 
+  syncScreenTheme();
+  refreshWidgetStyles();
   screen.render();
 }
 
@@ -487,12 +673,16 @@ function showQr(qr) {
   tryResizeTerminal(42, 110);
   layout.main.show();
   layoutMainPanel('qr');
-  layout.main.setContent('{#448FA3-fg}Scan this QR with WhatsApp →{/}\n\n{#68C5DB-fg}Refreshing…{/}');
+  const dim = theme.fgDim.slice(1);
+  const fg = theme.fg.slice(1);
+  layout.main.setContent(
+    `{#${dim}-fg}Scan this QR with WhatsApp →{/}\n\n{#${fg}-fg}Refreshing…{/}`
+  );
   screen.render();
 
   qrcode.generate(qr, { small: true }, (code) => {
     layout.main.setContent(
-      `{#448FA3-fg}Scan this QR with WhatsApp →{/}\n\n{#68C5DB-fg}${code}{/}`
+      `{#${dim}-fg}Scan this QR with WhatsApp →{/}\n\n{#${fg}-fg}${code}{/}`
     );
     screen.render();
   });
@@ -509,6 +699,7 @@ function showChats(chats) {
 
   if (layout.main) layout.main.hide();
   if (layout.chatDetail) layout.chatDetail.hide();
+  if (layout.settingsList) layout.settingsList.hide();
 
   if (!layout.chatList) {
     layout.chatList = blessed.list({
@@ -520,22 +711,20 @@ function showChats(chats) {
       vi: true,
       mouse: true,
       tags: true,
+      invertSelected: false,
+      transparent: true,
       scrollbar: {
-        ch: ' ',
-        track: {
-          bg: theme.scrollbar
-        },
+        ch: '│',
         style: {
-          fg: theme.fgDim,
-          bg: theme.bg
+          fg: theme.fgDim
         }
       },
       style: {
         fg: theme.fg,
-        bg: theme.bg,
         selected: {
-          bg: theme.selectedBg,
-          fg: theme.selectedFg
+          fg: theme.accent,
+          bold: true,
+          underline: true
         }
       }
     });
@@ -549,6 +738,7 @@ function showChats(chats) {
 
   syncListAndDetailHeights();
   layout.chatList.show();
+  refreshWidgetStyles();
 
   const items = pageItems.map((c) => {
     const unread =
@@ -558,8 +748,10 @@ function showChats(chats) {
     const type = c.isGroup ? ` {${theme.fgDim}-fg}[Grp]{/${theme.fgDim}-fg}` : '';
     const time = formatTimestamp(c.timestamp);
     const lastMsg = truncate(c.lastMessage);
+    // Plain name (no inline fg tags) so the list row's item vs selected fg actually shows.
+    const name = String(c.name || '').replace(/\{/g, '(').replace(/\}/g, ')');
 
-    return `{${theme.accent}-fg}{bold}${c.name}{/bold}{/${theme.accent}-fg}${unread}${type} {${theme.fgDim}-fg}- ${time}{/${theme.fgDim}-fg}\n   {${theme.fgDim}-fg}${lastMsg}{/${theme.fgDim}-fg}`;
+    return `${name}${unread}${type} {${theme.fgDim}-fg}- ${time}{/${theme.fgDim}-fg}\n   {${theme.fgDim}-fg}${lastMsg.replace(/\{/g, '(').replace(/\}/g, ')')}{/${theme.fgDim}-fg}`;
   });
 
   layout.chatList.setItems(items);
@@ -600,6 +792,7 @@ async function openChat(chatOrId) {
   clearReplyTarget();
 
   if (layout.chatList) layout.chatList.hide();
+  if (layout.settingsList) layout.settingsList.hide();
 
   if (!layout.chatDetail) {
     layout.chatDetail = blessed.box({
@@ -607,9 +800,9 @@ async function openChat(chatOrId) {
       left: 0,
       width: '100%',
       height: innerRows(),
+      transparent: true,
       style: {
-        fg: theme.fg,
-        bg: theme.bg
+        fg: theme.fg
       }
     });
 
@@ -622,9 +815,9 @@ async function openChat(chatOrId) {
       alwaysScroll: true,
       tags: true,
       padding: { left: 0, right: 0 },
+      transparent: true,
       style: {
-        fg: theme.fg,
-        bg: theme.bg
+        fg: theme.fg
       }
     });
 
@@ -635,9 +828,9 @@ async function openChat(chatOrId) {
       height: 1,
       hidden: true,
       tags: true,
+      transparent: true,
       style: {
-        fg: theme.fgDim,
-        bg: theme.bg
+        fg: theme.fgDim
       }
     });
 
@@ -648,9 +841,9 @@ async function openChat(chatOrId) {
       height: 3,
       keys: true,
       inputOnFocus: true,
+      transparent: true,
       style: {
-        fg: theme.fg,
-        bg: theme.bg
+        fg: theme.fg
       }
     });
 
@@ -753,6 +946,10 @@ async function refreshChats() {
 }
 
 screen.key(['escape'], () => {
+  if (state.screen === 'settings') {
+    closeSettings();
+    return;
+  }
   if (state.screen !== 'chatDetail') return;
   if (state.replyTo) {
     clearReplyTarget();
@@ -775,6 +972,14 @@ screen.key(['b'], () => {
 
 screen.key(['C-l'], () => {
   void performLogout();
+});
+
+screen.key(['f2'], () => {
+  if (state.screen === 'settings') {
+    closeSettings();
+    return;
+  }
+  openSettings();
 });
 
 screen.key(['r'], () => {
@@ -878,5 +1083,6 @@ screen.key(['p'], () => {
 module.exports = {
   init,
   showQr,
-  handleReady
+  handleReady,
+  applyPalette
 };
