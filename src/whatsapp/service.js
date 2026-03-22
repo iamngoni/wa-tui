@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { install, detectBrowserPlatform, Browser } = require('@puppeteer/browsers');
 const {
   Client,
   LocalAuth,
@@ -10,6 +11,65 @@ const {
 const EventEmitter = require('events');
 const { formatPeerLabel, truncate } = require('../utils/format');
 const { displayBodyForParts } = require('../utils/messageFormat');
+
+/**
+ * Check if Puppeteer's Chrome is already installed.
+ */
+function isBrowserInstalled() {
+  try {
+    const puppeteer = require('puppeteer');
+    return fs.existsSync(puppeteer.executablePath());
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Remove stale/corrupt chrome cache folders that lack the actual executable.
+ * Puppeteer refuses to re-download if the folder exists, even if incomplete.
+ */
+function cleanStaleChromeCache() {
+  try {
+    const cacheDir = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
+    if (!fs.existsSync(cacheDir)) return;
+    for (const entry of fs.readdirSync(cacheDir)) {
+      const entryPath = path.join(cacheDir, entry);
+      if (!fs.statSync(entryPath).isDirectory()) continue;
+      // Check if any executable exists inside — if not, it's stale
+      const hasExe = fs.readdirSync(entryPath, { recursive: true }).some(
+        (f) => String(f).includes('chrome') || String(f).includes('Chrome')
+      );
+      // If the folder is nearly empty (no chrome binary), remove it
+      if (!hasExe) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+      }
+    }
+  } catch (_) {
+    // Non-critical — install may still work or produce a clear error
+  }
+}
+
+/**
+ * Install Puppeteer's Chrome, emitting progress via the provided callback.
+ * Uses @puppeteer/browsers Node API for reliable progress reporting.
+ * @param {(percent: number) => void} onProgress
+ */
+async function installBrowser(onProgress) {
+  cleanStaleChromeCache();
+  const { PUPPETEER_REVISIONS } = require('puppeteer-core/lib/cjs/puppeteer/revisions.js');
+  const cacheDir = path.join(os.homedir(), '.cache', 'puppeteer');
+  await install({
+    browser: Browser.CHROME,
+    buildId: PUPPETEER_REVISIONS.chrome,
+    platform: detectBrowserPlatform(),
+    cacheDir,
+    downloadProgressCallback: (downloadedBytes, totalBytes) => {
+      if (totalBytes > 0) {
+        onProgress(Math.round((downloadedBytes / totalBytes) * 100));
+      }
+    }
+  });
+}
 
 async function resolveIncomingAuthor(msg, chat) {
   const isGroup = Boolean(chat && chat.isGroup);
@@ -253,18 +313,42 @@ class WhatsAppService extends EventEmitter {
     this._remoteTypingBridgeInstalled = true;
   }
 
-  initialize(onQr, onReady, onAuth) {
+  async initialize(onQr, onReady, onAuth) {
+    if (!isBrowserInstalled()) {
+      this.emit('lifecycle', { phase: 'browser_download', percent: 0 });
+      await installBrowser((percent) => {
+        this.emit('lifecycle', { phase: 'browser_download', percent });
+      });
+    }
+    this.emit('lifecycle', { phase: 'launching' });
+
+    this.client.on('loading_screen', (percent, message) => {
+      this.emit('lifecycle', { phase: 'syncing', percent, message });
+    });
+
     this.client.on('qr', (qr) => {
+      this.emit('lifecycle', { phase: 'qr' });
       onQr(qr);
     });
 
     this.client.on('ready', () => {
       this.ready = true;
+      this.emit('lifecycle', { phase: 'ready' });
       onReady();
     });
 
     this.client.on('authenticated', () => {
+      this.emit('lifecycle', { phase: 'authenticated' });
       if (onAuth) onAuth();
+    });
+
+    this.client.on('auth_failure', (msg) => {
+      this.emit('lifecycle', { phase: 'auth_failure', message: msg });
+    });
+
+    this.client.on('disconnected', (reason) => {
+      this.ready = false;
+      this.emit('lifecycle', { phase: 'disconnected', reason });
     });
 
     this.client.on('message_ack', (msg, ack) => {
@@ -326,18 +410,14 @@ class WhatsAppService extends EventEmitter {
       })();
     });
 
-    this.client.on('auth_failure', (msg) => {
-      console.error('Authentication failure:', msg);
-    });
-
+    this.emit('lifecycle', { phase: 'waiting_auth' });
     return this.client.initialize();
   }
 
   async getChats() {
     const chats = await this.client.getChats();
-    const sorted = chats.sort((a, b) => b.timestamp - a.timestamp);
 
-    return sorted.map((chat) => {
+    return chats.map((chat, listIndex) => {
       const title =
         chat.name || chat.formattedTitle || (chat.id && chat.id.user) || 'Unknown';
 
@@ -345,6 +425,8 @@ class WhatsAppService extends EventEmitter {
         id: chat.id._serialized,
         name: title,
         isGroup: chat.isGroup,
+        pinned: Boolean(chat.pinned),
+        listIndex,
         unreadCount: chat.unreadCount || 0,
         timestamp: chat.timestamp || 0,
         lastMessage: chat.lastMessage ? chat.lastMessage.body : '',

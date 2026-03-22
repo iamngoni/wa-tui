@@ -1,6 +1,7 @@
 const state = {
   screen: 'loading', // 'loading', 'qr', 'chats', 'chatDetail'
   qr: null,
+  allChats: [],
   chats: [],
   currentChatId: null,
   currentChatName: null,
@@ -21,8 +22,13 @@ const state = {
   page: 1,
   pageSize: 10,
   loading: true,
+  /** 'init' | 'launching' | 'waiting_auth' | 'qr' | 'authenticated' | 'syncing' | 'loading_chats' | 'ready' */
+  loadingPhase: 'init',
   error: null,
   unreadCount: 0,
+  searchOpen: false,
+  searchReturnScreen: null,
+  searchHitMessageId: null,
   /** When opening Settings (F2), where to return: chats | chatDetail */
   settingsReturnScreen: null,
   /** Remote peer composing: 'typing' | 'recording' | null (current chat only) */

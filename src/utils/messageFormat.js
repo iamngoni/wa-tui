@@ -1,5 +1,5 @@
 const { MessageTypes } = require('whatsapp-web.js');
-const { truncate } = require('./format');
+const { truncate, sanitizeForBlessed } = require('./format');
 
 function mediaBracketLabel(type, hasMedia) {
   if (!hasMedia) return null;
@@ -41,9 +41,11 @@ function augmentDisplayPlain(row) {
     out += ` (re: ${row.quotedSnippet})`;
   }
   if (row.localPath) {
-    out += ` @ ${truncate(row.localPath, 56)}`;
+    out += ` [click or Ctrl+O to open]`;
+  } else if (row.hasMedia) {
+    out += ` [Ctrl+D to open]`;
   }
-  return out;
+  return sanitizeForBlessed(out);
 }
 
 module.exports = {
