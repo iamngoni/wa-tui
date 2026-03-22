@@ -41,7 +41,9 @@ function augmentDisplayPlain(row) {
     out += ` (re: ${row.quotedSnippet})`;
   }
   if (row.localPath) {
-    out += ` @ ${truncate(row.localPath, 56)}`;
+    out += ` [click or Ctrl+O to open]`;
+  } else if (row.hasMedia) {
+    out += ` [Ctrl+D to open]`;
   }
   return sanitizeForBlessed(out);
 }

@@ -1,5 +1,6 @@
 const blessed = require('neo-blessed');
 const qrcode = require('qrcode-terminal');
+const { exec } = require('child_process');
 const { MessageAck } = require('whatsapp-web.js');
 
 // Monkey-patch blessed's charWidth to handle emoji as double-wide.
@@ -697,7 +698,7 @@ function updateFooter() {
       ' [Enter]: apply palette · [Esc]/[F2]: back · Saved: ~/.wa-tui/settings.json · [Q]: Quit';
   } else if (state.screen === 'chatDetail') {
     line =
-      ' [Esc]: clr quote / back · [B]: Back · [Ctrl+K]: Search · [Ctrl+↑↓]: Quote · [Ctrl+D]: DL · [F2]: Colours · [Ctrl+L]: Logout · [Q]: Quit';
+      ' [Esc]: clr quote / back · [B]: Back · [Ctrl+K]: Search · [Ctrl+↑↓]: Quote · [Ctrl+D]: DL+Open · [Ctrl+O]: Open · [F2]: Colours · [Ctrl+L]: Logout · [Q]: Quit';
   } else if (state.screen === 'chats') {
     line =
       ' [Q]: Quit · [Ctrl+K] or [/]: Search · [F2]: Colours · [Ctrl+L]: Logout · [R]efresh · [U]nread · [N]/[P] · [1-3] filter · [O] sort';
@@ -926,6 +927,47 @@ function applyChatSort(chats) {
   return out;
 }
 
+function openMediaFile(fpath) {
+  const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+  exec(`${cmd} ${JSON.stringify(fpath)}`, (err) => {
+    if (err) {
+      const er = theme.error.slice(1);
+      layout.msgList.add(`{#${er}-fg}Could not open file: ${err.message}{/#${er}-fg}`);
+      screen.render();
+    }
+  });
+}
+
+async function openHighlightedMedia() {
+  if (state.screen !== 'chatDetail') return;
+  let targetId = state.replyTo?.id;
+  if (targetId) {
+    const sel = state.currentMessages.find((m) => m.id === targetId);
+    if (sel && !sel.hasMedia) targetId = null;
+  }
+  if (!targetId) {
+    const withMedia = [...state.currentMessages].reverse().find((m) => m.hasMedia);
+    targetId = withMedia?.id;
+  }
+  if (!targetId) {
+    const er = theme.error.slice(1);
+    layout.msgList.add(`{#${er}-fg}No media message found — Ctrl+↓ to pick a message.{/#${er}-fg}`);
+    screen.render();
+    return;
+  }
+  const fpath = state.mediaPaths[targetId];
+  if (!fpath) {
+    const d = theme.fgDim.slice(1);
+    layout.msgList.add(`{#${d}-fg}Media not downloaded yet — press Ctrl+D first.{/#${d}-fg}`);
+    screen.render();
+    return;
+  }
+  openMediaFile(fpath);
+  const d = theme.fgDim.slice(1);
+  layout.msgList.add(`{#${d}-fg}Opening: ${fpath.replace(/\{/g, '(')}{/#${d}-fg}`);
+  screen.render();
+}
+
 async function downloadHighlightedMedia() {
   if (state.screen !== 'chatDetail') return;
   let targetId = state.replyTo?.id;
@@ -953,8 +995,9 @@ async function downloadHighlightedMedia() {
     );
     state.mediaPaths[targetId] = fpath;
     redrawChatMessages();
+    openMediaFile(fpath);
     const d = theme.fgDim.slice(1);
-    layout.msgList.add(`{#${d}-fg}Saved: ${fpath.replace(/\{/g, '(')}{/#${d}-fg}`);
+    layout.msgList.add(`{#${d}-fg}Saved & opening: ${fpath.replace(/\{/g, '(')}{/#${d}-fg}`);
   } catch (e) {
     const er = theme.error.slice(1);
     layout.msgList.add(`{#${er}-fg}Download failed: ${e.message}{/#${er}-fg}`);
@@ -1355,7 +1398,8 @@ function renderChatDetailMeta() {
     'B back to chats',
     'Ctrl+K search',
     'Ctrl+up/down move quote',
-    'Ctrl+D download media',
+    'Ctrl+D download & open media',
+    'Ctrl+O or click: open media',
     '',
     `{${theme.accent}-fg}mouse: click prompt, wheel transcript, click lines{/}`
   ];
@@ -1431,6 +1475,54 @@ function ensureChatDetailLayout() {
     padding: { left: 0, right: 0 },
     transparent: false,
     style: { fg: theme.fg }
+  });
+
+  layout.msgList.on('mouse', (data) => {
+    if (data.action !== 'mousedown' || data.button !== 'left') return;
+    if (state.screen !== 'chatDetail') return;
+    const rows = rowsWithPaths();
+    if (!rows.length) return;
+    // Map click y to visual line index (accounting for scroll)
+    const scrollTop = layout.msgList.childBase || 0;
+    const absTop = layout.msgList.atop != null ? layout.msgList.atop : 0;
+    const visualLine = scrollTop + (data.y - absTop);
+    // rtof maps visual (wrapped) line index → original content line index
+    const clines = layout.msgList._clines;
+    let msgIdx;
+    if (clines && clines.rtof && clines.rtof[visualLine] != null) {
+      msgIdx = clines.rtof[visualLine];
+    } else {
+      msgIdx = visualLine;
+    }
+    if (msgIdx < 0 || msgIdx >= rows.length) return;
+    const msg = rows[msgIdx];
+    if (!msg || !msg.hasMedia) return;
+    if (msg.localPath) {
+      openMediaFile(msg.localPath);
+      const d = theme.fgDim.slice(1);
+      layout.msgList.add(`{#${d}-fg}Opening: ${msg.localPath.replace(/\{/g, '(')}{/#${d}-fg}`);
+      screen.render();
+    } else {
+      // Not yet downloaded — download + open
+      const d = theme.fgDim.slice(1);
+      layout.msgList.add(`{#${d}-fg}Downloading…{/#${d}-fg}`);
+      screen.render();
+      void (async () => {
+        try {
+          const fpath = await waService.downloadMessageMedia(
+            msg.id, state.currentChatId, state.currentRawChat
+          );
+          state.mediaPaths[msg.id] = fpath;
+          redrawChatMessages();
+          openMediaFile(fpath);
+          layout.msgList.add(`{#${d}-fg}Saved & opening: ${fpath.replace(/\{/g, '(')}{/#${d}-fg}`);
+        } catch (e) {
+          const er = theme.error.slice(1);
+          layout.msgList.add(`{#${er}-fg}Download failed: ${e.message}{/#${er}-fg}`);
+        }
+        screen.render();
+      })();
+    }
   });
 
   layout.replyBar = blessed.box({
@@ -2614,6 +2706,11 @@ screen.key(['C-down'], () => {
 screen.key(['C-d'], () => {
   if (state.searchOpen) return;
   void downloadHighlightedMedia();
+});
+
+screen.key(['C-o'], () => {
+  if (state.searchOpen) return;
+  void openHighlightedMedia();
 });
 
 waService.on('message', (msg) => {
