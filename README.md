@@ -65,15 +65,26 @@ Run the command from whatever directory you want to use for WhatsApp session fil
 - **O** Cycle sort: **recent** → **unread first** → **A–Z**.
 - **N** / **P** Next / previous **page** of chats (see header `P1`, `P2`, …).
 - **R** Reload the chat list.
+- **Ctrl+K** or **/** Open the **fuzzy finder** (search chats and messages).
 - **F2** Open **colour settings** (palette applies after **Enter**; **Esc** / **F2** closes).
 - **Ctrl+L** **Log out** (ends the session and exits).
 - **Q** or **Ctrl+C** **Quit** without logging out (session may remain linked).
+
+### Fuzzy finder (Ctrl+K or /)
+
+A centered search modal for quickly finding chats and messages.
+
+- Type to **filter** — results update as you type. All search terms must appear as substrings (case-insensitive).
+- **↑↓** move through results, **Enter** opens the selected chat or jumps to a message.
+- **Esc** closes the finder.
+- When opened from inside a conversation, both **chats** and **messages from the current thread** are searchable.
 
 ### Inside a conversation
 
 - Focus is on the **message box** at the bottom. Type text and press **Enter** to **send**.
 - **Esc** If you’re quoting a message, clears the quote; if not, **returns to the chat list** (draft for that chat is kept).
 - **B** **Back** to the chat list (same as Esc when not quoting).
+- **Ctrl+K** Open the **fuzzy finder**.
 - **Ctrl+↑** / **Ctrl+↓** Move the **quote/reply** target to a **newer or older** message (▶ marks the selected line). Then send as usual to reply quoting that message.
 - **Ctrl+D** **Download** media from the quoted message if it has an attachment; otherwise tries the latest message with media. Saved under **`~/Downloads/wa-tui/`** (path is echoed in the log).
 - Scroll the transcript with the mouse wheel or your terminal’s scroll keys if supported (**PgUp** / **PgDn** often work on focused log widgets).
